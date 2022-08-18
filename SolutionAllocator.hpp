@@ -6,40 +6,67 @@ template<
 	size_t ALIGNMENT  // The alignment at which we much allocate the objects.  You can assume this is less than or equal to 4kB
 	> 
 class SolutionAllocator {
-	std::set<T*> chunks; // We store everything we allocated so we can clean up in the destructor.
+	std::vector<uint8_t*> chunks; // We store everything we allocated so we can clean up in the destructor.
+    std::vector<T*> free_list;
+    size_t section_size;
+    size_t num_T;
+    size_t max_num_T;
+    uint8_t* curr;
+    T* new_alloc;
 public:
  	typedef T ItemType; // This will make T available as SolutionAllocator::ItemType 
 	static const size_t Alignment = ALIGNMENT;  // Likewise, we can access the alignment as SolutionAllocator::Alignment
+    static const size_t size = sizeof(T);
 	
-	SolutionAllocator() {}
+	SolutionAllocator() {
+        if(size % Alignment == 0) {
+            section_size = size;
+        }
+        else {
+            section_size = ((size / Alignment) + 1) * Alignment;
+        }
+        
+        num_T = 0;
+        max_num_T = CHUNK_SIZE / section_size;
+        curr = NULL;
+        new_alloc = NULL;
+    }
 	
-        T * alloc() {
-		void* p  = NULL;
-		// this system call can allocate aribitrary-sized and aligned
-		// objects.  Since it can handle any size, it's more general.
-		int r =  posix_memalign(&p, ALIGNMENT, sizeof(T));
-		if (r == -1) { 
-			std::cerr << "posix_memalign() failed.  Exiting: " << strerror(errno) << "\n";
-			exit(1);
-		}
-		uint8_t * t = reinterpret_cast<uint8_t*>(p); // alloc_chunk provides void*, but we can assign to void.  So cast...
-		for(uint i= 0; i < sizeof(T); i++) {
-			t[i] = 0; // and set to zero.
-		}
-		T* c = reinterpret_cast<T*>(p); // cast to the type we allocate.
-		new (c) T; // This is the "in place" new operator.  It constructs an object at a given location.
-		chunks.insert(c); // record it so we can delete it later.
-		return c;
+    T * alloc() {  
+        if(free_list.size() > 0) {
+            new_alloc = free_list.back();
+            
+            T* recycle = new_alloc;
+            
+            memset(recycle, 0, section_size);
+            
+            free_list.pop_back();
+        }
+        else if(chunks.size() == 0 || num_T == max_num_T) {
+            void* p = alloc_chunk();
+            new_alloc = reinterpret_cast<T*>(p);
+            curr = reinterpret_cast<uint8_t*>(p);
+            chunks.push_back(curr);
+            curr += section_size;
+            num_T = 1;
+        }
+        else {
+            new_alloc = reinterpret_cast<T*>(curr);
+            curr += section_size;
+            ++num_T;
+        }
+   
+        new (new_alloc) T;
+        return new_alloc;
 	}
 	
 	void free(T * p) {
-		std::free(reinterpret_cast<void*>(p)); // Return the memory
-		chunks.erase(p); // note that it's no longer allocated.
+		free_list.push_back(p);
 	}
 
 	~SolutionAllocator() {
 		for(auto & p: chunks) { 
-			std::free(reinterpret_cast<void*>(p)); // Return everything that still allocated.
+			free_chunk(p); // Return everything that still allocated.
 		}
 	}
 };
